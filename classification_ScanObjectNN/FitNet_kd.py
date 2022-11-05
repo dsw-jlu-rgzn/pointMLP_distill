@@ -23,7 +23,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 import sklearn.metrics as metrics
 import numpy as np
 from kd_losses.st import SoftTarget
-from kd_losses.fitnet import Hint
+from kd_losses.fitnet import Hint, WHint
 from models.pointmlp import ConvBNReLU1D
 from models.hook_feature import FeatureExtraction
 def parse_args():
@@ -145,6 +145,14 @@ def main():
                  "module.pos_blocks_list.3.operation.1.net2" )
         trainable_list.append(net_s_trans)
 
+
+    elif args.kd_mode == "WFitNet":
+        criterionKD = WHint()
+        net_s_trans = ConvBNReLU1D(in_channels=256, out_channels=1024).to(device)
+        net_s_trans = torch.nn.DataParallel(net_s_trans)
+        FExtract = FeatureExtraction(net_s, net_t, "module.pos_blocks_list.3.operation.0.net2",
+                                     "module.pos_blocks_list.3.operation.1.net2")
+        trainable_list.append(net_s_trans)
     if args.AddST == True:
         criterionKDST = SoftTarget(args.T)
     else:
@@ -244,12 +252,12 @@ def train(net, trainloader, optimizer, criterion, device, args):
 
             loss_kd = kd_criterion(logits_s, logits_t.detach())* args.lambda_kd
 
-        if args.kd_mode == "FitNet":
+        if args.kd_mode in ["WFitNet" "FitNet" ]:
             f_s = net_s_trans(FExtract.s_feature_list[data.device])
             f_t = FExtract.t_feature_list[data.device]
             loss_kd = kd_criterion(f_s, f_t.detach())*args.lambda_kd
 
-        loss_ST_kd = 0
+        loss_kd_ST = 0
         if args.AddST == True:
             loss_kd_ST = criterionKDST(logits_s, logits_t.detach()) * args.lambda_kd
 
@@ -309,7 +317,7 @@ def validate(net, testloader, criterion, device, args):
             if args.kd_mode == "ST":
                 kd_loss = kd_criterion(logits_s, logits_t.detach()) * args.lambda_kd
 
-            if args.kd_mode == "FitNet":
+            if args.kd_mode in ["WFitNet" "FitNet" ]:
                 f_s = net_s_trans(FExtract.s_feature_list[data.device])
                 f_t = FExtract.t_feature_list[data.device]
                 kd_loss = kd_criterion(f_s, f_t.detach()) * args.lambda_kd
