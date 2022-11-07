@@ -248,11 +248,11 @@ def train(net, trainloader, optimizer, criterion, device, args):
         # print(label)
         # print(sum(logits_t.max(dim=1)[1] ==label).item()/32)
         loss_cls = cls_criterion(logits_s, label)
+        loss_kd = 0
         if args.kd_mode == "ST":
+            loss_kd = kd_criterion(logits_s, logits_t.detach()) * args.lambda_kd
 
-            loss_kd = kd_criterion(logits_s, logits_t.detach())* args.lambda_kd
-
-        if args.kd_mode in ["WFitNet" "FitNet" ]:
+        if args.kd_mode in ["WFitNet" , "FitNet" ]:
             f_s = net_s_trans(FExtract.s_feature_list[data.device])
             f_t = FExtract.t_feature_list[data.device]
             loss_kd = kd_criterion(f_s, f_t.detach())*args.lambda_kd
@@ -314,10 +314,11 @@ def validate(net, testloader, criterion, device, args):
             logits_s = net_s(data)
             logits_t = net_t(data)
             cls_loss = cls_criterion(logits_s, label)
+            kd_loss = 0
             if args.kd_mode == "ST":
                 kd_loss = kd_criterion(logits_s, logits_t.detach()) * args.lambda_kd
 
-            if args.kd_mode in ["WFitNet" "FitNet" ]:
+            if args.kd_mode in ["WFitNet",  "FitNet" ]:
                 f_s = net_s_trans(FExtract.s_feature_list[data.device])
                 f_t = FExtract.t_feature_list[data.device]
                 kd_loss = kd_criterion(f_s, f_t.detach()) * args.lambda_kd

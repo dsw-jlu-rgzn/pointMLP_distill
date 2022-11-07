@@ -47,8 +47,8 @@ class GradCAM(object):
         if self.gradient == None:
 
             self.gradient = output_grad[0]
-        else:
-            self.gradient = output_grad[0] + self.gradient
+        # else:
+        #     self.gradient = output_grad[0] + self.gradient
 
     def _get_xyz_features_hook(self, module, input, output):
         self.xyz = output[0]
@@ -77,27 +77,12 @@ class GradCAM(object):
             index = np.argmax(output.cpu().data.numpy())
         #target = output[0][index[0]]
         #target.backward()
-        #target = 0
+        target = 0
         for i in range(len(index)):
-            #target = target + output[i][index[i]]
-            output[i][index[i]].backward(retain_graph=True)
-            #target.backward()
-        #target.backward()
-        #xyz = self.xyz
-        # gradient = self.gradient[0].cpu().data.numpy()  # [C,H,W]
-        # weight = np.mean(gradient, axis=( 1 ))  # [C]
-        #
-        # feature = self.feature[0].cpu().data.numpy()  # [C,H,W]
-        #
-        # cam = feature * weight[:, np.newaxis]  # [C,H,W]
-        # cam = np.sum(cam, axis=0)  # [H,W]
-        # cam = np.maximum(cam, 0)  # ReLU
-        #
-        # # 数值归一化
-        # cam -= np.min(cam)
-        # cam /= np.max(cam)
-        # # resize to 224*224
-        # #cam = cv2.resize(cam, (224, 224))
+            target = target + output[i][index[i]]
+            #output[i][index[i]].backward(retain_graph=True)
+        target.backward(retain_graph=True)
+
 
         gradient = self.gradient.cpu().data.numpy()# [B,C,N]
         weight = np.mean(gradient, axis=( 2 )) # [B,C]
