@@ -242,7 +242,19 @@ def main():
     for epoch in range(start_epoch, args.epoch):
         printf('Epoch(%d/%s) Learning Rate %s:' % (epoch + 1, args.epoch, optimizer.param_groups[0]['lr']))
         train_out = train(net_ts, train_loader, optimizer, criterion_all, device, args)  # {"loss", "acc", "acc_avg", "time"}
+        wandb.log({
+            "train/4.epoch_loss": train_out['loss'],
+            "train/5.epoch_acc":  train_out['acc'],
+            "train/6.epoch_acc_avg":  train_out['acc_avg'],
+            "train/7.epoch_time":  train_out['time']
+        })
         test_out = validate(net_ts, test_loader, criterion_all, device, args)
+        wandb.log({
+            "test/4.epoch_loss": test_out['loss'],
+            "test/5.epoch_acc": test_out['acc'],
+            "test/6.epoch_acc_avg": test_out['acc_avg'],
+            "test/7.epoch_time": test_out['time']
+        })
         scheduler.step()
 
         if test_out["acc"] > best_test_acc:
@@ -290,6 +302,8 @@ def train(net, trainloader, optimizer, criterion, device, args):
     #net.train()
     net_s = net['net_s']
     net_s.train()
+    if args.kd_mode in ["grad"]:
+        FExtract = net['FExtract']
     if args.kd_mode in ["WFitNet" , "FitNet" , "CFitNet"]:
         net_s_trans = net['net_s_trans']
         FExtract = net['FExtract']
@@ -388,11 +402,11 @@ def train(net, trainloader, optimizer, criterion, device, args):
     time_cost = int((datetime.datetime.now() - time_cost).total_seconds())
     train_true = np.concatenate(train_true)
     train_pred = np.concatenate(train_pred)
-    wandb.log({
-        "train/4.epoch_acc": 100. * metrics.accuracy_score(train_true, train_pred),
-        "train/5.epoch_acc_avg": 100. * metrics.balanced_accuracy_score(train_true, train_pred),
-        "train/6.time":time_cost
-    })
+    # wandb.log({
+    #     "train/4.epoch_acc": 100. * metrics.accuracy_score(train_true, train_pred),
+    #     "train/5.epoch_acc_avg": 100. * metrics.balanced_accuracy_score(train_true, train_pred),
+    #     "train/6.time":time_cost
+    # })
     return {
         "loss": float("%.3f" % (train_loss / (batch_idx + 1))),
         "acc": float("%.3f" % (100. * metrics.accuracy_score(train_true, train_pred))),
@@ -412,7 +426,8 @@ def validate(net, testloader, criterion, device, args):
 
     net_s = net['net_s']
     net_s.eval()
-
+    if args.kd_mode in ["grad"]:
+        FExtract = net['FExtract']
     if args.kd_mode in ["WFitNet", "FitNet", "CFitNet"]:
         net_s_trans = net['net_s_trans']
         FExtract = net['FExtract']
@@ -469,7 +484,9 @@ def validate(net, testloader, criterion, device, args):
                            kd_criterion(new_feature_s_list[1], new_feature_t_list[1].detach()) +
                            kd_criterion(new_feature_s_list[2], new_feature_t_list[2].detach()) +
                            kd_criterion(new_feature_s_list[3], new_feature_t_list[3].detach())) / 4.0 * args.lambda_kd
-
+            if args.kd_mode == "grad":
+                grad_s, xyz_s, grad_t, xyz_t = FExtract(data, label)
+                loss_kd = kd_criterion(grad_s.detach(), grad_t.detach()) * args.lambda_kd
             loss_kd_ST = 0
 
             if args.AddST == True:
@@ -495,11 +512,12 @@ def validate(net, testloader, criterion, device, args):
     time_cost = int((datetime.datetime.now() - time_cost).total_seconds())
     test_true = np.concatenate(test_true)
     test_pred = np.concatenate(test_pred)
-    wandb.log({
-        "test/4.epoch_acc": 100. * metrics.accuracy_score(test_true, test_pred),
-        "test/5.epoch_acc_avg": 100. * metrics.balanced_accuracy_score(test_true, test_pred),
-        "test/6.time": time_cost
-    })
+    # wandb.log({
+    #     "test/4.epoch_acc": 100. * metrics.accuracy_score(test_true, test_pred),
+    #     "test/5.epoch_acc_avg": 100. * metrics.balanced_accuracy_score(test_true, test_pred),
+    #     "test/6.time": time_cost
+    # })
+
     return {
         "loss": float("%.3f" % (test_loss / (batch_idx + 1))),
         "acc": float("%.3f" % (100. * metrics.accuracy_score(test_true, test_pred))),
