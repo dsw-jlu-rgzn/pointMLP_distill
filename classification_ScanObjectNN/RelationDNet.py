@@ -24,8 +24,10 @@ import sklearn.metrics as metrics
 import numpy as np
 from kd_losses.st import SoftTarget
 from kd_losses.fitnet import Hint, WHint
+from kd_losses.RelationD import RelationCos, RKD, LocalRegionMulti
 from models.pointmlp import ConvBNReLU1D
-from models.hook_feature import FeatureExtraction
+from models.hook_feature import FeatureExtraction, FeatureXyzExtraction, FeatureXyzExtractionST, MultiFeatureXyzExtractionST
+import wandb
 def parse_args():
     """Parameters"""
     parser = argparse.ArgumentParser('training')
@@ -42,7 +44,7 @@ def parse_args():
     parser.add_argument('--learning_rate', default=0.01, type=float, help='learning rate in training')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='decay rate')
     parser.add_argument('--smoothing', action='store_true', default=False, help='loss smoothing')
-    parser.add_argument('--seed', type=int, help='random seed')
+    parser.add_argument('--seed', type=int, default=1834, help='random seed')
     parser.add_argument('--workers', default=4, type=int, help='workers')
 
     # knowledge distillation
@@ -51,6 +53,9 @@ def parse_args():
     parser.add_argument('--lambda_kd', type=float,default=1,  help='kd hyper-parameter ')
     parser.add_argument('--kd_mode', type=str, default="None", help='kd mode selection ')
     parser.add_argument('--AddST', action='store_true', default=False, help='loss smoothing')
+    parser.add_argument('--w_dist', type=float, default=5, help='kd hyper-parameter ')
+    parser.add_argument('--w_angle', type=float, default=10, help='kd hyper-parameter ')
+    parser.add_argument('--name', type=str,default="PointMLPD", help='wandb name')
     return parser.parse_args()
 
 
@@ -156,11 +161,47 @@ def main():
         FExtract = FeatureExtraction(net_s, net_t, "module.pos_blocks_list.2.operation.1.net2",
                                      "module.pos_blocks_list.2.operation.1.net2")
         trainable_list.append(net_s_trans)
+
+
+    elif args.kd_mode == "RD":
+        criterionKD = RKD(args.w_dist, args.w_angle)
+        net_s_trans = RelationCos().to(device)
+        net_s_trans = torch.nn.DataParallel(net_s_trans)
+        layer_name_s = "module." + "pos_blocks_list.3.operation.0.net2"
+        layer_name_t = "module." + "pos_blocks_list.3.operation.1.net2"
+        xyz_s = "module." + "local_grouper_list.3"
+        xyz_t = "module." + "local_grouper_list.3"
+        FExtract = FeatureXyzExtractionST(net_s, net_t, layer_name_s=layer_name_s, xyz_name_s=xyz_s,
+                                                        layer_name_t=layer_name_t, xyz_name_t=xyz_t)
+        trainable_list.append(net_s_trans)
+    elif args.kd_mode == "RDM":
+        criterionKD = RKD(args.w_dist, args.w_angle)
+        in_out_channels_s = [[64, 128], [128, 256], [256, 512], [256, 1024]]
+        in_out_channels_t = [[128, 128], [256, 256], [512, 512], [1024, 1024]]
+        net_s_trans = LocalRegionMulti(in_out_channels_s=in_out_channels_s,
+                                       in_out_channels_t=in_out_channels_t).to(device)
+        net_s_trans = torch.nn.DataParallel(net_s_trans)
+        layer_name_s_list = ["module.pos_blocks_list.0.operation.0.net2", "module.pos_blocks_list.1.operation.0.net2",
+                             "module.pos_blocks_list.2.operation.1.net2", "module.pos_blocks_list.3.operation.0.net2"]
+        layer_name_t_list = ["module.pos_blocks_list.0.operation.1.net2", "module.pos_blocks_list.1.operation.1.net2",
+                             "module.pos_blocks_list.2.operation.1.net2", "module.pos_blocks_list.3.operation.1.net2"]
+        xyz_s_list = ["module.local_grouper_list.0", "module.local_grouper_list.1",
+                      "module.local_grouper_list.2", "module.local_grouper_list.3"]
+        xyz_t_list = ["module.local_grouper_list.0", "module.local_grouper_list.1",
+                      "module.local_grouper_list.2", "module.local_grouper_list.3"]
+        FExtract = MultiFeatureXyzExtractionST(net_s, net_t,
+                                               layer_name_s_list=layer_name_s_list,
+                                               layer_name_t_list=layer_name_t_list,
+                                               xyz_name_s_list=xyz_s_list,
+                                               xyz_name_t_list=xyz_t_list)
+        trainable_list.append(net_s_trans)
+
     if args.AddST == True:
         criterionKDST = SoftTarget(args.T)
     else:
         criterionKDST = None
-
+    args.name =args.t_model + args.s_model + str(datetime.datetime.now().strftime('-%Y%m%d%H%M%S'))
+    wandb.init(name=args.name, project="PointMLP_KD", config=args)
     printf('==> Preparing data..')
     train_loader = DataLoader(ScanObjectNN(partition='training', num_points=args.num_points), num_workers=args.workers,
                               batch_size=args.batch_size, shuffle=True, drop_last=True)
@@ -235,7 +276,14 @@ def train(net, trainloader, optimizer, criterion, device, args):
     cls_criterion = criterion['cls_criterion']
     kd_criterion = criterion['kd_criterion']
     criterionKDST = criterion['criterionKDST']
+
+    if args.kd_mode in ["RD", "RDM"]:
+        net_s_trans = net['net_s_trans']
+        FExtract = net['FExtract']
+        net_s_trans.train()
+
     train_loss = 0
+    train_kd_loss = 0
     correct = 0
     total = 0
     train_pred = []
@@ -267,6 +315,24 @@ def train(net, trainloader, optimizer, criterion, device, args):
                 f_t = FExtract.t_feature_list[data.device]
                 loss_kd = kd_criterion(f_s, f_t.detach())*args.lambda_kd
 
+        if args.kd_mode == "RD":
+            feature_s = FExtract.feature_list_s[data.device].transpose(1, 2)  # [ 2, 256, 64]
+            xyz_s = FExtract.xyz_list_s[data.device]  # [ 2, 64, 3 ]
+
+            feature_t = FExtract.feature_list_t[data.device].transpose(1, 2)  # [2, 512, 128]
+            xyz_t = FExtract.xyz_list_t[data.device]  # [2, 128, 3]
+            new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t)
+            loss_kd = kd_criterion(new_feature_s, new_feature_t.detach()) * args.lambda_kd
+
+        if args.kd_mode == "RDM":
+            feature_s_list, xyz_s_list = FExtract.get_feature_xyz_s(device=data.device)
+            feature_t_list, xyz_t_list = FExtract.get_feature_xyz_t(device=data.device)
+            new_feature_s_list, new_feature_t_list = net_s_trans(feature_s_list, xyz_s_list, feature_t_list, xyz_t_list)
+            loss_kd = (kd_criterion(new_feature_s_list[0], new_feature_t_list[0].detach()) +
+                       kd_criterion(new_feature_s_list[1], new_feature_t_list[1].detach()) +
+                       kd_criterion(new_feature_s_list[2], new_feature_t_list[2].detach()) +
+                       kd_criterion(new_feature_s_list[3], new_feature_t_list[3].detach())) / 4.0 * args.lambda_kd
+
         loss_kd_ST = 0
         if args.AddST == True:
             loss_kd_ST = criterionKDST(logits_s, logits_t.detach()) * args.lambda_kd
@@ -274,7 +340,8 @@ def train(net, trainloader, optimizer, criterion, device, args):
         loss = loss_cls + loss_kd + loss_kd_ST
         loss.backward()
         optimizer.step()
-        train_loss += loss.item()
+        train_loss += loss_cls.item()
+        train_kd_loss += (loss_kd+loss_kd_ST).item()
         preds = logits_s.max(dim=1)[1]
 
         train_true.append(label.cpu().numpy())
@@ -282,13 +349,22 @@ def train(net, trainloader, optimizer, criterion, device, args):
 
         total += label.size(0)
         correct += preds.eq(label).sum().item()
-
-        progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-                     % (train_loss / (batch_idx + 1), 100. * correct / total, correct, total))
+        wandb.log({
+            "train/1.cls_loss": train_loss/ (batch_idx + 1),
+            "train/2.kd_loss": train_kd_loss / (batch_idx + 1),
+            "train/3.Acc":100. * correct / total
+        })
+        progress_bar(batch_idx, len(trainloader), 'Loss: %.3f|KD: %.3f | Acc: %.3f%% (%d/%d)'
+                     % (train_loss / (batch_idx + 1),train_kd_loss / (batch_idx + 1), 100. * correct / total, correct, total))
 
     time_cost = int((datetime.datetime.now() - time_cost).total_seconds())
     train_true = np.concatenate(train_true)
     train_pred = np.concatenate(train_pred)
+    wandb.log({
+        "train/4.epoch_acc": 100. * metrics.accuracy_score(train_true, train_pred),
+        "train/5.epoch_acc_avg": 100. * metrics.balanced_accuracy_score(train_true, train_pred),
+        "train/6.time":time_cost
+    })
     return {
         "loss": float("%.3f" % (train_loss / (batch_idx + 1))),
         "acc": float("%.3f" % (100. * metrics.accuracy_score(train_true, train_pred))),
@@ -300,6 +376,7 @@ def train(net, trainloader, optimizer, criterion, device, args):
 def validate(net, testloader, criterion, device, args):
 
     test_loss = 0
+    test_kd_loss = 0
     correct = 0
     total = 0
     test_true = []
@@ -311,7 +388,7 @@ def validate(net, testloader, criterion, device, args):
     if args.kd_mode in ["WFitNet", "FitNet", "CFitNet"]:
         net_s_trans = net['net_s_trans']
         FExtract = net['FExtract']
-        net_s_trans.train()
+        net_s_trans.eval()
 
 
     net_t = net['net_t']
@@ -319,6 +396,11 @@ def validate(net, testloader, criterion, device, args):
     cls_criterion = criterion['cls_criterion']
     kd_criterion = criterion['kd_criterion']
     criterionKDST = criterion['criterionKDST']
+
+    if args.kd_mode in ["RD", "RDM"]:
+        net_s_trans = net['net_s_trans']
+        FExtract = net['FExtract']
+        net_s_trans.eval()
     time_cost = datetime.datetime.now()
     with torch.no_grad():
         for batch_idx, (data, label) in enumerate(testloader):
@@ -327,9 +409,9 @@ def validate(net, testloader, criterion, device, args):
             logits_s = net_s(data)
             logits_t = net_t(data)
             cls_loss = cls_criterion(logits_s, label)
-            kd_loss = 0
+            loss_kd = 0
             if args.kd_mode == "ST":
-                kd_loss = kd_criterion(logits_s, logits_t.detach()) * args.lambda_kd
+                loss_kd = kd_criterion(logits_s, logits_t.detach()) * args.lambda_kd
 
             if args.kd_mode in ["WFitNet", "FitNet", "CFitNet"]:
                 if args.kd_mode == "CFitNet":
@@ -341,23 +423,55 @@ def validate(net, testloader, criterion, device, args):
                     f_t = FExtract.t_feature_list[data.device]
                     loss_kd = kd_criterion(f_s, f_t.detach()) * args.lambda_kd
 
+            if args.kd_mode == "RD":
+                feature_s = FExtract.feature_list_s[data.device].transpose(1, 2)  # [ 2, 256, 64]
+                xyz_s = FExtract.xyz_list_s[data.device]  # [ 2, 64, 3 ]
+
+                feature_t = FExtract.feature_list_t[data.device].transpose(1, 2)  # [2, 512, 128]
+                xyz_t = FExtract.xyz_list_t[data.device]  # [2, 128, 3]
+                new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t)
+                loss_kd = kd_criterion(new_feature_s, new_feature_t.detach()) * args.lambda_kd
+
+            if args.kd_mode == "RDM":
+                feature_s_list, xyz_s_list = FExtract.get_feature_xyz_s(device=data.device)
+                feature_t_list, xyz_t_list = FExtract.get_feature_xyz_t(device=data.device)
+                new_feature_s_list, new_feature_t_list = net_s_trans(feature_s_list, xyz_s_list, feature_t_list,
+                                                                     xyz_t_list)
+                loss_kd = (kd_criterion(new_feature_s_list[0], new_feature_t_list[0].detach()) +
+                           kd_criterion(new_feature_s_list[1], new_feature_t_list[1].detach()) +
+                           kd_criterion(new_feature_s_list[2], new_feature_t_list[2].detach()) +
+                           kd_criterion(new_feature_s_list[3], new_feature_t_list[3].detach())) / 4.0 * args.lambda_kd
+
             loss_kd_ST = 0
+
             if args.AddST == True:
                 loss_kd_ST = criterionKDST(logits_s, logits_t.detach()) * args.lambda_kd
             #kd_loss = kd_criterion(logits_s, logits_t.detach())
-            loss = cls_loss + loss_kd + loss_kd_ST
-            test_loss += loss.item()
+            #loss = cls_loss + loss_kd + loss_kd_ST
+            kd_based_loss = loss_kd + loss_kd_ST
+            test_loss += cls_loss.item()
+            test_kd_loss += kd_based_loss.item()
             preds = logits_s.max(dim=1)[1]
             test_true.append(label.cpu().numpy())
             test_pred.append(preds.detach().cpu().numpy())
             total += label.size(0)
             correct += preds.eq(label).sum().item()
-            progress_bar(batch_idx, len(testloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-                         % (test_loss / (batch_idx + 1), 100. * correct / total, correct, total))
+            wandb.log({
+                "test/1.cls_loss": test_loss / (batch_idx + 1),
+                "test/2.kd_loss": test_kd_loss / (batch_idx + 1),
+                "test/3.Acc": 100. * correct / total
+            })
+            progress_bar(batch_idx, len(testloader), 'Loss: %.3f|KD: %.3f | Acc: %.3f%% (%d/%d)'
+                         % (test_loss / (batch_idx + 1),test_kd_loss / (batch_idx + 1), 100. * correct / total, correct, total))
 
     time_cost = int((datetime.datetime.now() - time_cost).total_seconds())
     test_true = np.concatenate(test_true)
     test_pred = np.concatenate(test_pred)
+    wandb.log({
+        "test/4.epoch_acc": 100. * metrics.accuracy_score(test_true, test_pred),
+        "test/5.epoch_acc_avg": 100. * metrics.balanced_accuracy_score(test_true, test_pred),
+        "test/6.time": time_cost
+    })
     return {
         "loss": float("%.3f" % (test_loss / (batch_idx + 1))),
         "acc": float("%.3f" % (100. * metrics.accuracy_score(test_true, test_pred))),

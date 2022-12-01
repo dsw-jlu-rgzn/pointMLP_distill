@@ -344,6 +344,34 @@ class Model(nn.Module):
         return x
 
 
+class ReModel(nn.Module):
+    def __init__(self, model1, model2):
+        super(ReModel, self).__init__()
+        self.model1 = model1
+        self.model2 = model2
+
+    def forward(self, x1,x2):
+        xyz1 = x1.permute(0, 2, 1)
+        xyz2 = x2.permute(0, 2, 1)
+        batch_size, _, _ = x1.size()
+        x1 = self.model1.embedding(x1)  # B,D,N
+        x2 = self.model2.embedding(x2)  # B,D,N
+        for i in range(self.model1.stages):
+            # Give xyz[b, p, 3] and fea[b, p, d], return new_xyz[b, g, 3] and new_fea[b, g, k, d]
+            xyz1, x1 = self.model1.local_grouper_list[i](xyz1, x1.permute(0, 2, 1))  # [b,g,3]  [b,g,k,d]
+            x1 = self.model1.pre_blocks_list[i](x1)  # [b,d,g]
+            x1 = self.model1.pos_blocks_list[i](x1)  # [b,d,g]
+
+        for i in range(self.model2.stages):
+            # Give xyz[b, p, 3] and fea[b, p, d], return new_xyz[b, g, 3] and new_fea[b, g, k, d]
+            xyz2, x2 = self.model2.local_grouper_list[i](xyz2, x2.permute(0, 2, 1))  # [b,g,3]  [b,g,k,d]
+            x2 = self.model2.pre_blocks_list[i](x2)  # [b,d,g]
+            x2 = self.model2.pos_blocks_list[i](x2)  # [b,d,g]
+        #x1,x2
+
+        # x = F.adaptive_max_pool1d(x, 1).squeeze(dim=-1)
+        # x = self.classifier(x)
+        return x
 
 
 def pointMLP(num_classes=40, **kwargs) -> Model:
@@ -353,16 +381,29 @@ def pointMLP(num_classes=40, **kwargs) -> Model:
                    k_neighbors=[24, 24, 24, 24], reducers=[2, 2, 2, 2], **kwargs)
 
 
+def pointMLPD(num_classes=40, **kwargs) -> Model:
+    return Model(points=512, class_num=num_classes, embed_dim=64, groups=1, res_expansion=1.0,
+                   activation="relu", bias=False, use_xyz=False, normalize="anchor",
+                   dim_expansion=[2, 2, 2, 2], pre_blocks=[2, 2, 2, 2], pos_blocks=[2, 2, 2, 2],
+                   k_neighbors=[12, 12, 12, 12], reducers=[2, 2, 2, 2], **kwargs)
+
 def pointMLPElite(num_classes=40, **kwargs) -> Model:
     return Model(points=1024, class_num=num_classes, embed_dim=32, groups=1, res_expansion=0.25,
                    activation="relu", bias=False, use_xyz=False, normalize="anchor",
                    dim_expansion=[2, 2, 2, 1], pre_blocks=[1, 1, 2, 1], pos_blocks=[1, 1, 2, 1],
                    k_neighbors=[24,24,24,24], reducers=[2, 2, 2, 2], **kwargs)
 
+
+def pointMLPEliteD(num_classes=40, **kwargs) -> Model:
+    return Model(points=512, class_num=num_classes, embed_dim=32, groups=1, res_expansion=0.25,
+                   activation="relu", bias=False, use_xyz=False, normalize="anchor",
+                   dim_expansion=[2, 2, 2, 1], pre_blocks=[1, 1, 2, 1], pos_blocks=[1, 1, 2, 1],
+                   k_neighbors=[12,12,12,12], reducers=[2, 2, 2, 2], **kwargs)
+
 if __name__ == '__main__':
-    data = torch.rand(2, 3, 1024)
+    data = torch.rand(2, 3, 1024).cuda()
     print("===> testing pointMLP ...")
-    model = pointMLP()
+    model = pointMLP().cuda()
     out = model(data)
     print(out.shape)
 

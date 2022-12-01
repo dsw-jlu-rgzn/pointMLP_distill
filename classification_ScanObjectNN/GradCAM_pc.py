@@ -7,7 +7,7 @@ import numpy as np
 import models as models
 from collections import OrderedDict
 import torch.nn as nn
-
+import wandb
 seed = 1
 def set_seed(seed):
     np.random.seed(seed)
@@ -106,6 +106,19 @@ def get_last_conv_name(net):
     return layer_name
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 set_seed(seed)
+wandb.init(
+        # Set the project where this run will be logged
+        project="GradCAM_pc",
+        # We pass a run name (otherwise it’ll be randomly assigned, like sunshine-lollypop-10)
+        name=f"CAM{seed}",
+        # Track hyperparameters and run metadata
+        config={
+            "learning_rate": 0.02,
+            "architecture": "CNN",
+            "dataset": "CIFAR-100",
+            "epochs": 10,
+        })
+
 train_loader = DataLoader(ScanObjectNN(partition='training', num_points=1024), num_workers=4,
                               batch_size=2, shuffle=True, drop_last=True)
 test_loader = DataLoader(ScanObjectNN(partition='test', num_points=1024), num_workers=4,
@@ -141,6 +154,13 @@ grad_cam = GradCAM(net_t, layer_name=layer_name, xyz_name=xyz_name)
 mask, xyz = grad_cam(data, label)
 label = label.numpy()
 xyz = xyz.cpu().numpy()
+print(xyz.shape)
+
+for i in range(xyz.shape[0]):
+    a = wandb.data_types.Object3D.from_numpy(xyz[i])
+    wandb.log(
+        {
+            f"point_scene_{i}": a})
 print(mask.shape, xyz.shape)
 np.savez('ScanObjectNNCAM.npz',xyz, label, mask)
 
@@ -151,3 +171,4 @@ np.save('file.npy', my_dict)
 #     data = data.cuda()
 #     #data.permute(0, 2, 1)
 #     out = net_t(data)
+wandb.finish()
