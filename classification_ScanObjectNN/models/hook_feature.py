@@ -24,6 +24,97 @@ from kd_losses.RelationD import RelationCos, RKD, LocalRegionMulti
 from models.pointmlp import index_points, farthest_point_sample, knn_point
 
 
+'''
+target: calculate the Grad-CAM between T and S.
+The simple version: directly calculate the Grad similarity.
+输入T和S模型，以及point cloud和他的label，输出T,S模型的Grad
+Grad如何获得? 通过计算feature map的gradient
+'''
+class GradCAMST(object):
+    def __init__(self, net_s, net_t, layer_name_s, layer_name_t, xyz_name_s, xyz_name_t):
+        self.GradCAM_s = GradCAM(net_s, layer_name_s, xyz_name_s)
+        self.GradCAM_t = GradCAM(net_t, layer_name_t, xyz_name_t)
+    def __call__(self, inputs, index):
+        gradient_s, xyz_s = self.GradCAM_s(inputs, index)
+        gradient_t, xyz_t = self.GradCAM_t(inputs, index)
+        return gradient_s, xyz_s, gradient_t, xyz_t
+
+
+class GradCAM(object):
+    """
+    1: 网络不更新梯度,输入需要梯度更新
+    2: 使用目标类别的得分做反向传播
+    """
+
+    def __init__(self, net, layer_name, xyz_name):
+        self.net = net
+        self.layer_name = layer_name
+        self.xyz_name = xyz_name
+        # self.feature = None
+        # self.gradient = None
+        self.feature = {}
+        self.gradient = {}
+        self.xyz = {}
+        self.net.eval()
+        self.handlers = []
+        self._register_hook()
+
+    def _get_features_hook(self, module, input, output):
+        self.feature[output.device] = output
+
+
+    def _get_grads_hook(self, module, input_grad, output_grad):
+        self.gradient[output_grad.device] = output_grad
+
+    def _get_xyz_features_hook(self, module, input, output):
+        self.xyz[output[0].device] = output[0]
+        print(output[0].shape)
+
+
+    def _register_hook(self):
+        for (name, module) in self.net.named_modules():
+            if name == self.layer_name:
+                self.handlers.append(module.register_forward_hook(self._get_features_hook))
+                self.handlers.append(module.register_backward_hook(self._get_grads_hook))
+            if name == self.xyz_name:
+                self.handlers.append(module.register_forward_hook(self._get_xyz_features_hook))
+    def remove_handlers(self):
+        for handle in self.handlers:
+            handle.remove()
+
+    def __call__(self, inputs, index):
+        """
+
+        :param inputs: [1,3,H,W]
+        :param index: class id
+        :return:
+        """
+        #self.net.zero_grad()
+        output = self.net(inputs)  # [2,num_classes]
+        if index is None:
+            index = np.argmax(output.cpu().data.numpy())
+        target = 0
+        for i in range(len(index)):
+            target = target + output[i][index[i]]
+            #output[i][index[i]].backward(retain_graph=True)
+        target.backward(retain_graph=True)
+
+
+        #gradient = self.gradient.cpu().data.numpy()# [B,C,N]
+        gradient = self.gradient[output.device]
+
+        # weight = np.mean(gradient, axis=( 2 )) # [B,C]
+        # feature = self.feature.cpu().data.numpy() #[B,C,N]
+        # cam = feature * weight[:, :, np.newaxis] #[B,C,N]
+        # cam = np.sum(cam, axis=1) #[B,N]
+        # cam = np.maximum(cam, 0)
+        # # 数值归一化
+        # cam -= np.tile(np.min(cam,1)[:,np.newaxis], (1,cam.shape[1]))#.tile(4,512)
+        # cam /= np.tile(np.max(cam,1)[:,np.newaxis], (1,cam.shape[1]))#.tile(4,512)
+        #return cam, self.xyz
+        return gradient, self.xyz
+
+
 class MultiFeatureXyzExtractionST(object):
     def __init__(self,
                  net_s,
