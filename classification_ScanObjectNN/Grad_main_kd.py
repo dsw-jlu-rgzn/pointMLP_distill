@@ -39,7 +39,7 @@ def get_last_conv_name(net):
     """
     layer_name = None
     for name, m in net.named_modules():
-        if isinstance(m, nn.Conv2d):
+        if isinstance(m, nn.Conv1d):
             layer_name = name
     return layer_name
 
@@ -331,6 +331,7 @@ def train(net, trainloader, optimizer, criterion, device, args):
     for batch_idx, (data, label) in enumerate(trainloader):
         data, label = data.to(device), label.to(device).squeeze()
         data = data.permute(0, 2, 1)  # so, the input data shape is [batch, 3, 1024]
+        data.require_grad = True
         optimizer.zero_grad()
 
 
@@ -373,8 +374,10 @@ def train(net, trainloader, optimizer, criterion, device, args):
                        kd_criterion(new_feature_s_list[3], new_feature_t_list[3].detach())) / 4.0 * args.lambda_kd
 
         if args.kd_mode == "grad":
-            grad_s, xyz_s, grad_t, xyz_t = FExtract(data, label)
-            loss_kd = kd_criterion(grad_s.detach(), grad_t.detach()) * args.lambda_kd
+            cam_s, xyz_s, cam_t, xyz_t, sum_feature_s, sum_feature_t = FExtract(data, label)
+            loss_kd = kd_criterion(cam_s.detach(), cam_t.detach()) * args.lambda_kd + \
+                      kd_criterion(sum_feature_s.detach(), sum_feature_t.detach()) * args.lambda_kd
+            print(loss_kd)
         loss_kd_ST = 0
         if args.AddST == True:
             loss_kd_ST = criterionKDST(logits_s, logits_t.detach()) * args.lambda_kd
@@ -449,6 +452,7 @@ def validate(net, testloader, criterion, device, args):
         for batch_idx, (data, label) in enumerate(testloader):
             data, label = data.to(device), label.to(device).squeeze()
             data = data.permute(0, 2, 1)
+            data.require_grad = True
             logits_s = net_s(data)
             logits_t = net_t(data)
             cls_loss = cls_criterion(logits_s, label)

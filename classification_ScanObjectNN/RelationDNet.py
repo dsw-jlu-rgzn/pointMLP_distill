@@ -55,6 +55,8 @@ def parse_args():
     parser.add_argument('--AddST', action='store_true', default=False, help='loss smoothing')
     parser.add_argument('--w_dist', type=float, default=5, help='kd hyper-parameter ')
     parser.add_argument('--w_angle', type=float, default=10, help='kd hyper-parameter ')
+    parser.add_argument('--k', type=float, default=16, help='kd hyper-parameter ')
+    parser.add_argument('--sample_point', type=float, default=32, help='kd hyper-parameter ')
     parser.add_argument('--name', type=str,default="PointMLPD", help='wandb name')
     return parser.parse_args()
 
@@ -165,7 +167,11 @@ def main():
 
     elif args.kd_mode == "RD":
         criterionKD = RKD(args.w_dist, args.w_angle)
-        net_s_trans = RelationCos().to(device)
+        net_s_trans = RelationCos(in_out_channels_s=[256, 1024],
+                                  in_out_channels_t=[1024, 1024],
+                                  k=args.k,
+                                  sample_point=args.sample_point
+                                  ).to(device)
         net_s_trans = torch.nn.DataParallel(net_s_trans)
         layer_name_s = "module." + "pos_blocks_list.3.operation.0.net2"
         layer_name_t = "module." + "pos_blocks_list.3.operation.1.net2"

@@ -35,9 +35,9 @@ class GradCAMST(object):
         self.GradCAM_s = GradCAM(net_s, layer_name_s, xyz_name_s)
         self.GradCAM_t = GradCAM(net_t, layer_name_t, xyz_name_t)
     def __call__(self, inputs, index):
-        gradient_s, xyz_s = self.GradCAM_s(inputs, index)
-        gradient_t, xyz_t = self.GradCAM_t(inputs, index)
-        return gradient_s, xyz_s, gradient_t, xyz_t
+        cam_s, xyz_s, sum_feature_s = self.GradCAM_s(inputs, index)
+        cam_t, xyz_t, sum_feature_t = self.GradCAM_t(inputs, index)
+        return cam_s, xyz_s, cam_t, xyz_t, sum_feature_s, sum_feature_t
 
 
 class GradCAM(object):
@@ -64,11 +64,11 @@ class GradCAM(object):
 
 
     def _get_grads_hook(self, module, input_grad, output_grad):
-        self.gradient[output_grad.device] = output_grad
+        self.gradient[output_grad[0].device] = output_grad[0]
 
     def _get_xyz_features_hook(self, module, input, output):
         self.xyz[output[0].device] = output[0]
-        print(output[0].shape)
+        #print(output[0].shape)
 
 
     def _register_hook(self):
@@ -101,8 +101,17 @@ class GradCAM(object):
 
 
         #gradient = self.gradient.cpu().data.numpy()# [B,C,N]
-        gradient = self.gradient[output.device]
-
+        gradient = self.gradient[output.device]#16,256,32
+        weight = torch.mean(gradient, axis=2)#[B,C]
+        feature = self.feature[output.device]#[B,C,N]
+        cam = feature * weight.unsqueeze(2) #[B,C,N]
+        cam = torch.sum(cam, axis=1)#[B,N]
+        sum_feature = torch.sum(feature, axis=1)
+        cam = torch.maximum(cam, torch.zeros_like(cam))
+        cam -= torch.min(cam, 1)[0].unsqueeze(-1)
+        cam /= torch.max(cam, 1)[0].unsqueeze(-1)
+        #cam = (cam - min) / max
+        # cam
         # weight = np.mean(gradient, axis=( 2 )) # [B,C]
         # feature = self.feature.cpu().data.numpy() #[B,C,N]
         # cam = feature * weight[:, :, np.newaxis] #[B,C,N]
@@ -112,7 +121,7 @@ class GradCAM(object):
         # cam -= np.tile(np.min(cam,1)[:,np.newaxis], (1,cam.shape[1]))#.tile(4,512)
         # cam /= np.tile(np.max(cam,1)[:,np.newaxis], (1,cam.shape[1]))#.tile(4,512)
         #return cam, self.xyz
-        return gradient, self.xyz
+        return cam, self.xyz, sum_feature
 
 
 class MultiFeatureXyzExtractionST(object):
