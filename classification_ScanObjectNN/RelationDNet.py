@@ -55,8 +55,8 @@ def parse_args():
     parser.add_argument('--AddST', action='store_true', default=False, help='loss smoothing')
     parser.add_argument('--w_dist', type=float, default=5, help='kd hyper-parameter ')
     parser.add_argument('--w_angle', type=float, default=10, help='kd hyper-parameter ')
-    parser.add_argument('--k', type=float, default=16, help='kd hyper-parameter ')
-    parser.add_argument('--sample_point', type=float, default=32, help='kd hyper-parameter ')
+    parser.add_argument('--k', type=int, default=16, help='kd hyper-parameter ')
+    parser.add_argument('--sample_point', type=int, default=32, help='kd hyper-parameter ')
     parser.add_argument('--name', type=str,default="PointMLPD", help='wandb name')
     return parser.parse_args()
 

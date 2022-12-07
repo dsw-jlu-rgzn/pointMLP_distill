@@ -345,6 +345,15 @@ class Model(nn.Module):
 
 
 class ReModel(nn.Module):
+    '''
+       1.首先需要p1和p2的特征
+       2.获取特征后需要一个融合模块（融合模块还没写）
+       3.需要三个分类器
+       MultiTFusion module -> input P1, P2,
+       output1 -> Pf
+       output2 -> Cls1 out Cls2 out Cls3 out
+       如何获取P1 and P2?
+       '''
     def __init__(self, model1, model2):
         super(ReModel, self).__init__()
         self.model1 = model1
@@ -371,7 +380,7 @@ class ReModel(nn.Module):
 
         # x = F.adaptive_max_pool1d(x, 1).squeeze(dim=-1)
         # x = self.classifier(x)
-        return x
+        return x2
 
 
 def pointMLP(num_classes=40, **kwargs) -> Model:
