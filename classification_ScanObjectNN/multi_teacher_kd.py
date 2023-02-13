@@ -24,9 +24,9 @@ import sklearn.metrics as metrics
 import numpy as np
 from kd_losses.st import SoftTarget
 from kd_losses.fitnet import Hint, WHint
-from kd_losses.RelationD import RelationCos, RKD, LocalRegionMulti
+from kd_losses.RelationD import RelationCos, RKD, LocalRegionMulti, SingleClassifier, TeacherFusion, MultiTeacherOperation
 from models.pointmlp import ConvBNReLU1D
-from models.hook_feature import FeatureExtraction, FeatureXyzExtractionST, MultiFeatureXyzExtractionST, SingleXyzExtractionST
+from models.hook_feature import FeatureExtraction, FeatureXyzExtractionST, MultiFeatureXyzExtractionST, SingleXyzExtractionST, MultiTeacherFeatureXyzExtractionST
 import wandb
 def parse_args():
     """Parameters"""
@@ -36,7 +36,8 @@ def parse_args():
     parser.add_argument('--msg', type=str, help='message after checkpoint')
     parser.add_argument('--batch_size', type=int, default=32, help='batch size in training')
     parser.add_argument('--s_model', default='pointMLPElite', help='model name [default: pointnet_cls]')
-    parser.add_argument('--t_model', default='pointMLP', help='model name [default: pointnet_cls]')
+    parser.add_argument('--t_model1', default='pointMLP', help='model name [default: pointnet_cls]')
+    parser.add_argument('--t_model2', default='pointMLP', help='model name [default: pointnet_cls]')
 
     parser.add_argument('--num_classes', default=15, type=int, help='default value for classes of ScanObjectNN')
     parser.add_argument('--epoch', default=200, type=int, help='number of epoch in training')
@@ -49,7 +50,12 @@ def parse_args():
 
     # knowledge distillation
     parser.add_argument('--T', type=float, default=4,  help='temperature coefficient')
-    parser.add_argument('--t_model_path', type=str, default="/workspace/model_compress/pointMLP-pytorch/classification_ScanObjectNN/checkpoints/pointMLP-20221026115034/best_checkpoint.pth", help='teacher checkpoint path')
+    parser.add_argument('--t1_model_path', type=str,
+                        default="/workspace/model_compress/pointMLP-pytorch/classification_ScanObjectNN/checkpoints/pointMLP-20221026115034/best_checkpoint.pth",
+                        help='teacher checkpoint path')
+    parser.add_argument('--t2_model_path', type=str,
+                        default="/workspace/model_compress/pointMLP-pytorch/classification_ScanObjectNN/checkpoints/pointMLP-20221026115034/best_checkpoint.pth",
+                        help='teacher checkpoint path')
     parser.add_argument('--lambda_kd', type=float,default=1,  help='kd hyper-parameter ')
     parser.add_argument('--kd_mode', type=str, default="None", help='kd mode selection ')
     parser.add_argument('--AddST', action='store_true', default=False, help='loss smoothing')
@@ -57,7 +63,9 @@ def parse_args():
     parser.add_argument('--w_angle', type=float, default=10, help='kd hyper-parameter ')
     parser.add_argument('--k', type=int, default=16, help='kd hyper-parameter ')
     parser.add_argument('--sample_point', type=int, default=32, help='kd hyper-parameter ')
-    parser.add_argument('--name', type=str,default="PointMLPD", help='wandb name')
+    parser.add_argument('--adaptive_xyz', type=str, default="", help='set the new xyz name')
+    parser.add_argument('--name', type=str,default="MultiPointMLP", help='wandb name')
+
     return parser.parse_args()
 
 
@@ -98,14 +106,17 @@ def main():
     printf('==> Building model..')
 
     net_s = models.__dict__[args.s_model](num_classes=args.num_classes)
-    net_t = models.__dict__[args.t_model](num_classes=args.num_classes)
+    net_t1 = models.__dict__[args.t_model1](num_classes=args.num_classes)
+    net_t2 = models.__dict__[args.t_model2](num_classes=args.num_classes)
     criterion = cal_loss
     net_s = net_s.to(device)
-    net_t = net_t.to(device)
+    net_t1 = net_t1.to(device)
+    net_t2 = net_t2.to(device)
     # criterion = criterion.to(device)
     if device == 'cuda':
         net_s = torch.nn.DataParallel(net_s)
-        net_t = torch.nn.DataParallel(net_t)
+        net_t1 = torch.nn.DataParallel(net_t1)
+        net_t2 = torch.nn.DataParallel(net_t2)
         cudnn.benchmark = True
     trainable_list = torch.nn.ModuleList([])
     trainable_list.append(net_s)
@@ -139,9 +150,14 @@ def main():
         logger = Logger(os.path.join(args.checkpoint, 'log.txt'), title="ModelNet" + args.model, resume=True)
         optimizer_dict = checkpoint['optimizer']
     print('==> Loading teacher model..')
-    t_checkpoint_path = args.t_model_path
-    t_checkpoint = torch.load(t_checkpoint_path)
-    net_t.load_state_dict(t_checkpoint['net'])
+    t1_checkpoint_path = args.t1_model_path
+    t1_checkpoint = torch.load(t1_checkpoint_path)
+    net_t1.load_state_dict(t1_checkpoint['net'])
+    print('==> Succeed in teacher model 1..')
+    t2_checkpoint_path = args.t2_model_path
+    t2_checkpoint = torch.load(t2_checkpoint_path)
+    net_t2.load_state_dict(t2_checkpoint['net'])
+    print('==> Succeed in teacher model 2..')
     net_s_trans = None
     FExtract = None
     criterionKD = None
@@ -177,9 +193,16 @@ def main():
         layer_name_t = "module." + "pos_blocks_list.3.operation.1.net2"
         xyz_s = "module." + "local_grouper_list.3"
         xyz_t = "module." + "local_grouper_list.3"
-        FExtract = FeatureXyzExtractionST(net_s, net_t, layer_name_s=layer_name_s, xyz_name_s=xyz_s,
+        if args.adaptive_xyz is "":
+            FExtract = FeatureXyzExtractionST(net_s, net_t, layer_name_s=layer_name_s, xyz_name_s=xyz_s,
                                                         layer_name_t=layer_name_t, xyz_name_t=xyz_t)
-
+        else:
+            new_xyz = "module." + args.adaptive_xyz
+            FExtract = FeatureXyzExtractionST(net_s,
+                                              net_t,
+                                              layer_name_s=layer_name_s, xyz_name_s=xyz_s,
+                                              layer_name_t=layer_name_t, xyz_name_t=xyz_t,
+                                              adaptive_xyz_name=new_xyz)
         trainable_list.append(net_s_trans)
     elif args.kd_mode == "RDM":
         criterionKD = RKD(args.w_dist, args.w_angle)
@@ -203,11 +226,40 @@ def main():
                                                xyz_name_t_list=xyz_t_list)
         trainable_list.append(net_s_trans)
 
+    elif args.kd_mode == "MT":
+        criterionKD = RKD(args.w_dist, args.w_angle)#mse loss
+        #约束两个teacher模型的大小，输出两个teacher模型的点结果
+        net_s_trans = MultiTeacherOperation(in_channels=[256 ,1024, 1024],
+                                  out_channels=[1024, 1024, 1024],
+                                  k=args.k,
+                                  sample_point=args.sample_point
+                                  ).to(device)
+
+        net_s_trans = torch.nn.DataParallel(net_s_trans)
+        #约束student和teacher混合后的结果
+        layer_name_s = "module." + "pos_blocks_list.3.operation.0.net2"
+        layer_name_t1 = "module." + "pos_blocks_list.3.operation.1.net2"
+        layer_name_t2 = "module." + "pos_blocks_list.3.operation.1.net2"
+        xyz_s = "module." + "local_grouper_list.3"
+        xyz_t1 = "module." + "local_grouper_list.3"
+        xyz_t2 = "module." + "local_grouper_list.3"
+        if args.adaptive_xyz is "":
+            FExtract = MultiTeacherFeatureXyzExtractionST(net_s, net_t1, net_t2, layer_name_s=layer_name_s, xyz_name_s=xyz_s,
+                                              layer_name_t1=layer_name_t1, xyz_name_t1=xyz_t1,
+                                              layer_name_t2=layer_name_t2, xyz_name_t2=xyz_t2)
+        else:
+            new_xyz = "module." + args.adaptive_xyz
+            FExtract = MultiTeacherFeatureXyzExtractionST(net_s, net_t1, net_t2, layer_name_s=layer_name_s, xyz_name_s=xyz_s,
+                                              layer_name_t1=layer_name_t1, xyz_name_t1=xyz_t1,
+                                              layer_name_t2=layer_name_t2, xyz_name_t2=xyz_t2,
+                                              adaptive_xyz_name=new_xyz)
+        trainable_list.append(net_s_trans)
+        net_t = {'net_t1':net_t1, 'net_t2':net_t2}
     if args.AddST == True:
         criterionKDST = SoftTarget(args.T)
     else:
         criterionKDST = None
-    args.name =args.t_model + args.s_model + str(datetime.datetime.now().strftime('-%Y%m%d%H%M%S'))
+    args.name =args.t_model1 + args.t_model2 + args.s_model + str(datetime.datetime.now().strftime('-%Y%m%d%H%M%S'))
     wandb.init(name=args.name, project="PointMLP_KD", config=args)
     printf('==> Preparing data..')
     train_loader = DataLoader(ScanObjectNN(partition='training', num_points=args.num_points), num_workers=args.workers,
@@ -219,7 +271,7 @@ def main():
     if optimizer_dict is not None:
         optimizer.load_state_dict(optimizer_dict)
     scheduler = CosineAnnealingLR(optimizer, args.epoch, eta_min=args.learning_rate / 100, last_epoch=start_epoch - 1)
-    net_ts = {'net_t':net_t, 'net_s':net_s, 'net_s_trans':net_s_trans, 'FExtract':FExtract}
+    net_ts = {'net_t':net_t, 'net_s':net_s,  'FExtract':FExtract,'net_s_trans':net_s_trans, 'trainable_list':trainable_list}
     criterion_all = {'cls_criterion':criterion, 'kd_criterion':criterionKD, 'criterionKDST':criterionKDST}
     for epoch in range(start_epoch, args.epoch):
         printf('Epoch(%d/%s) Learning Rate %s:' % (epoch + 1, args.epoch, optimizer.param_groups[0]['lr']))
@@ -272,19 +324,28 @@ def train(net, trainloader, optimizer, criterion, device, args):
     #net.train()
     net_s = net['net_s']
     net_s.train()
+    net_t = None
+    net_t1 = None
+    net_t2 = None
     if args.kd_mode in ["WFitNet" , "FitNet" , "CFitNet"]:
         net_s_trans = net['net_s_trans']
         FExtract = net['FExtract']
         net_s_trans.train()
+    if args.kd_mode not in ["MT"]:
+        net_t = net['net_t']
+        net_t.eval()
+    else:
+        net_t1 = net['net_t']['net_t1']
+        net_t2 = net['net_t']['net_t2']
+        net_t1.eval()
+        net_t2.eval()
 
-    net_t = net['net_t']
-    net_t.eval()
 
     cls_criterion = criterion['cls_criterion']
     kd_criterion = criterion['kd_criterion']
     criterionKDST = criterion['criterionKDST']
 
-    if args.kd_mode in ["RD", "RDM"]:
+    if args.kd_mode in ["RD", "RDM", "MT"]:
         net_s_trans = net['net_s_trans']
         FExtract = net['FExtract']
         net_s_trans.train()
@@ -303,12 +364,36 @@ def train(net, trainloader, optimizer, criterion, device, args):
 
 
         logits_s = net_s(data)
-        logits_t = net_t(data)
+        if args.kd_mode not in ['MT']:
+            logits_t = net_t(data)
+        else:
+            logits_t1 = net_t1(data)
+            logits_t2 = net_t2(data)
         # print(logits_t.max(dim=1)[1])
         # print(label)
         # print(sum(logits_t.max(dim=1)[1] ==label).item()/32)
         loss_cls = cls_criterion(logits_s, label)
         loss_kd = 0
+
+        if args.kd_mode == "MT":
+            feature_s = FExtract.feature_list_s[data.device].transpose(1, 2)  # [ 2, 256, 64]
+            xyz_s = FExtract.xyz_list_s[data.device]  # [ 2, 64, 3 ]
+
+            feature_t1 = FExtract.feature_list_t1[data.device].transpose(1, 2)  # [2, 512, 128]
+            feature_t2 = FExtract.feature_list_t2[data.device].transpose(1, 2)  # [2, 512, 128]
+            xyz_t1 = FExtract.xyz_list_t1[data.device]  # [2, 128, 3]
+            xyz_t2 = FExtract.xyz_list_t2[data.device]
+            if args.adaptive_xyz is not "":
+                adaptive_xyz = FExtract.adaptive_xyz_list[data.device]
+                new_feature_s, new_feature_tf, out_fusion_cls = net_s_trans(feature_s, xyz_s, feature_t1, xyz_t1, feature_t2, xyz_t2, adaptive_xyz)#2,32,256 2,32,3 2,64,1024 | 2, 32, 1024 |2, 128, 3
+
+            else:
+                new_feature_s, new_feature_tf, out_fusion_cls = net_s_trans(feature_s, xyz_s, feature_t1, xyz_t1,
+                                                                            feature_t2, xyz_t2)
+
+            loss_kd = kd_criterion(new_feature_s, new_feature_tf.detach()) * args.lambda_kd
+            loss_kd_cls = cls_criterion(out_fusion_cls, label)
+            loss_kd = loss_kd + loss_kd_cls
         if args.kd_mode == "ST":
             loss_kd = kd_criterion(logits_s, logits_t.detach()) * args.lambda_kd
 
@@ -328,7 +413,11 @@ def train(net, trainloader, optimizer, criterion, device, args):
 
             feature_t = FExtract.feature_list_t[data.device].transpose(1, 2)  # [2, 512, 128]
             xyz_t = FExtract.xyz_list_t[data.device]  # [2, 128, 3]
-            new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t)
+            if args.adaptive_xyz is not "":
+                adaptive_xyz = FExtract.adaptive_xyz_list[data.device]
+                new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t, adaptive_xyz)
+            else:
+                new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t)
             loss_kd = kd_criterion(new_feature_s, new_feature_t.detach()) * args.lambda_kd
 
         if args.kd_mode == "RDM":
@@ -436,7 +525,13 @@ def validate(net, testloader, criterion, device, args):
 
                 feature_t = FExtract.feature_list_t[data.device].transpose(1, 2)  # [2, 512, 128]
                 xyz_t = FExtract.xyz_list_t[data.device]  # [2, 128, 3]
-                new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t)
+                # new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t)
+                # loss_kd = kd_criterion(new_feature_s, new_feature_t.detach()) * args.lambda_kd
+                if args.adaptive_xyz is not "":
+                    adaptive_xyz = FExtract.adaptive_xyz_list[data.device]
+                    new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t, adaptive_xyz)
+                else:
+                    new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t)
                 loss_kd = kd_criterion(new_feature_s, new_feature_t.detach()) * args.lambda_kd
 
             if args.kd_mode == "RDM":

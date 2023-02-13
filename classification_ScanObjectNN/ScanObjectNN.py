@@ -77,6 +77,28 @@ class ScanObjectNN(Dataset):
         return self.data.shape[0]
 
 
+class ScanObjectNNDouble(Dataset):
+    def __init__(self, num_points1, num_points2, partition='training'):
+        self.data, self.label = load_scanobjectnn_data(partition)
+        self.num_points1 = num_points1
+        self.num_points2 = num_points2
+        self.partition = partition
+
+    def __getitem__(self, item):
+        pointcloud1 = self.data[item][:self.num_points1]
+        pointcloud2 = self.data[item][:self.num_points2]
+        label = self.label[item]
+        if self.partition == 'training':
+            pointcloud1 = translate_pointcloud(pointcloud1)
+            np.random.shuffle(pointcloud1)
+            pointcloud2 = translate_pointcloud(pointcloud2)
+            np.random.shuffle(pointcloud2)
+        return pointcloud1, pointcloud1, label
+
+    def __len__(self):
+        return self.data.shape[0]
+
+
 if __name__ == '__main__':
     train = ScanObjectNN(1024)
     test = ScanObjectNN(1024, 'test')

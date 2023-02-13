@@ -395,6 +395,11 @@ def pointMLPD(num_classes=40, **kwargs) -> Model:
                    activation="relu", bias=False, use_xyz=False, normalize="anchor",
                    dim_expansion=[2, 2, 2, 2], pre_blocks=[2, 2, 2, 2], pos_blocks=[2, 2, 2, 2],
                    k_neighbors=[12, 12, 12, 12], reducers=[2, 2, 2, 2], **kwargs)
+def pointMLPE(num_classes=40, **kwargs) -> Model:
+    return Model(points=256, class_num=num_classes, embed_dim=64, groups=1, res_expansion=1.0,
+                   activation="relu", bias=False, use_xyz=False, normalize="anchor",
+                   dim_expansion=[2, 2, 2, 2], pre_blocks=[2, 2, 2, 2], pos_blocks=[2, 2, 2, 2],
+                   k_neighbors=[12, 12, 12, 12], reducers=[2, 2, 2, 2], **kwargs)
 
 def pointMLPElite(num_classes=40, **kwargs) -> Model:
     return Model(points=1024, class_num=num_classes, embed_dim=32, groups=1, res_expansion=0.25,

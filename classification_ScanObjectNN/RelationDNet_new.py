@@ -57,7 +57,9 @@ def parse_args():
     parser.add_argument('--w_angle', type=float, default=10, help='kd hyper-parameter ')
     parser.add_argument('--k', type=int, default=16, help='kd hyper-parameter ')
     parser.add_argument('--sample_point', type=int, default=32, help='kd hyper-parameter ')
+    parser.add_argument('--adaptive_xyz', type=str, default="", help='set the new xyz name')
     parser.add_argument('--name', type=str,default="PointMLPD", help='wandb name')
+
     return parser.parse_args()
 
 
@@ -177,9 +179,16 @@ def main():
         layer_name_t = "module." + "pos_blocks_list.3.operation.1.net2"
         xyz_s = "module." + "local_grouper_list.3"
         xyz_t = "module." + "local_grouper_list.3"
-        FExtract = FeatureXyzExtractionST(net_s, net_t, layer_name_s=layer_name_s, xyz_name_s=xyz_s,
+        if args.adaptive_xyz is "":
+            FExtract = FeatureXyzExtractionST(net_s, net_t, layer_name_s=layer_name_s, xyz_name_s=xyz_s,
                                                         layer_name_t=layer_name_t, xyz_name_t=xyz_t)
-
+        else:
+            new_xyz = "module." + args.adaptive_xyz
+            FExtract = FeatureXyzExtractionST(net_s,
+                                              net_t,
+                                              layer_name_s=layer_name_s, xyz_name_s=xyz_s,
+                                              layer_name_t=layer_name_t, xyz_name_t=xyz_t,
+                                              adaptive_xyz_name=new_xyz)
         trainable_list.append(net_s_trans)
     elif args.kd_mode == "RDM":
         criterionKD = RKD(args.w_dist, args.w_angle)
@@ -328,7 +337,11 @@ def train(net, trainloader, optimizer, criterion, device, args):
 
             feature_t = FExtract.feature_list_t[data.device].transpose(1, 2)  # [2, 512, 128]
             xyz_t = FExtract.xyz_list_t[data.device]  # [2, 128, 3]
-            new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t)
+            if args.adaptive_xyz is not "":
+                adaptive_xyz = FExtract.adaptive_xyz_list[data.device]
+                new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t, adaptive_xyz)
+            else:
+                new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t)
             loss_kd = kd_criterion(new_feature_s, new_feature_t.detach()) * args.lambda_kd
 
         if args.kd_mode == "RDM":
@@ -436,7 +449,13 @@ def validate(net, testloader, criterion, device, args):
 
                 feature_t = FExtract.feature_list_t[data.device].transpose(1, 2)  # [2, 512, 128]
                 xyz_t = FExtract.xyz_list_t[data.device]  # [2, 128, 3]
-                new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t)
+                # new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t)
+                # loss_kd = kd_criterion(new_feature_s, new_feature_t.detach()) * args.lambda_kd
+                if args.adaptive_xyz is not "":
+                    adaptive_xyz = FExtract.adaptive_xyz_list[data.device]
+                    new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t, adaptive_xyz)
+                else:
+                    new_feature_s, new_feature_t = net_s_trans(feature_s, xyz_s, feature_t, xyz_t)
                 loss_kd = kd_criterion(new_feature_s, new_feature_t.detach()) * args.lambda_kd
 
             if args.kd_mode == "RDM":

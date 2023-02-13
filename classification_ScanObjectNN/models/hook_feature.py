@@ -163,10 +163,34 @@ class MultiFeatureXyzExtractionST(object):
             xyz_t_list.append(xyz_t)
         return feature_t_list, xyz_t_list
 
+class SingleXyzExtractionST(object):
+    def __init__(self, net_s, xyz_name_s="local_grouper_list.3"):
+        self.net_s = net_s
+        self.xyz_name_s = xyz_name_s
+        self.xyz_list_s = {}
+        self.handlers = []
+        self._register_hook()
+
+    def _get_xyz_features_s_hook(self, module, input, output):
+        self.xyz_list_s[input[0].device] = output[0]
+
+
+    def _register_hook(self):
+        for (name, module) in self.net_s.named_modules():
+            if name == self.xyz_name_s:
+                self.handlers.append(module.register_forward_hook(self._get_xyz_features_s_hook))
+
 
 class FeatureXyzExtractionST(object):
-    def __init__(self, net_s, net_t, layer_name_s="pos_blocks_list.3.operation.0.net2", xyz_name_s="local_grouper_list.3",
-                 layer_name_t="pos_blocks_list.3.operation.0.net2", xyz_name_t="local_grouper_list.3"):
+    def __init__(self,
+                 net_s,
+                 net_t,
+                 layer_name_s="pos_blocks_list.3.operation.0.net2",
+                 xyz_name_s="local_grouper_list.3",
+                 layer_name_t="pos_blocks_list.3.operation.0.net2",
+                 xyz_name_t="local_grouper_list.3",
+                 adaptive_xyz_name=None
+                 ):
         self.net_s = net_s
         self.layer_name_s = layer_name_s
         self.xyz_name_s = xyz_name_s
@@ -177,6 +201,9 @@ class FeatureXyzExtractionST(object):
         self.xyz_name_t = xyz_name_t
         self.feature_list_t = {}
         self.xyz_list_t = {}
+        self.adaptive_xyz_name = adaptive_xyz_name
+        if self.adaptive_xyz_name is not None:
+            self.adaptive_xyz_list = {}
         self.handlers = []
         self._register_hook()
 
@@ -192,6 +219,9 @@ class FeatureXyzExtractionST(object):
     def _get_xyz_features_t_hook(self, module, input, output):
         self.xyz_list_t[input[0].device] = output[0]
 
+    def _get_xyz_adaptive_features_t_hook(self, module, input, output):
+        self.adaptive_xyz_list[input[0].device] = output[0]
+
     def _register_hook(self):
         for (name, module) in self.net_s.named_modules():
             if name == self.layer_name_s:
@@ -203,6 +233,90 @@ class FeatureXyzExtractionST(object):
                 self.handlers.append(module.register_forward_hook(self._get_features_t_hook))
             if name == self.xyz_name_t:
                 self.handlers.append(module.register_forward_hook(self._get_xyz_features_t_hook))
+            if self.adaptive_xyz_name and name == self.adaptive_xyz_name:
+                self.handlers.append(module.register_forward_hook(self._get_xyz_adaptive_features_t_hook))
+
+    def remove_handlers(self):
+        for handle in self.handlers:
+            handle.remove()
+
+
+class MultiTeacherFeatureXyzExtractionST(object):
+    def __init__(self,
+                 net_s,
+                 net_t1,
+                 net_t2,
+                 layer_name_s="pos_blocks_list.3.operation.0.net2",
+                 xyz_name_s="local_grouper_list.3",
+                 layer_name_t1="pos_blocks_list.3.operation.0.net2",
+                 xyz_name_t1="local_grouper_list.3",
+                 layer_name_t2="pos_blocks_list.3.operation.0.net2",
+                 xyz_name_t2="local_grouper_list.3",
+                 adaptive_xyz_name=None
+                 ):
+        self.net_s = net_s
+        self.layer_name_s = layer_name_s
+        self.xyz_name_s = xyz_name_s
+        self.feature_list_s = {}
+        self.xyz_list_s = {}
+        self.net_t1 = net_t1
+        self.net_t2 = net_t2
+        self.layer_name_t1 = layer_name_t1
+        self.xyz_name_t1 = xyz_name_t1
+        self.feature_list_t1 = {}
+        self.xyz_list_t1 = {}
+
+        self.layer_name_t2 = layer_name_t2
+        self.xyz_name_t2 = xyz_name_t2
+        self.feature_list_t2 = {}
+        self.xyz_list_t2 = {}
+        self.adaptive_xyz_name = adaptive_xyz_name
+        if self.adaptive_xyz_name is not None:
+            self.adaptive_xyz_list = {}
+        self.handlers = []
+        self._register_hook()
+
+    def _get_features_s_hook(self, module, input, output):
+        self.feature_list_s[input[0].device] = output
+
+    def _get_xyz_features_s_hook(self, module, input, output):
+        self.xyz_list_s[input[0].device] = output[0]
+
+    def _get_features_t1_hook(self, module, input, output):
+        self.feature_list_t1[input[0].device] = output
+
+    def _get_xyz_features_t1_hook(self, module, input, output):
+        self.xyz_list_t1[input[0].device] = output[0]
+
+    def _get_features_t2_hook(self, module, input, output):
+        self.feature_list_t2[input[0].device] = output
+
+    def _get_xyz_features_t2_hook(self, module, input, output):
+        self.xyz_list_t2[input[0].device] = output[0]
+
+    def _get_xyz_adaptive_features_t_hook(self, module, input, output):
+        self.adaptive_xyz_list[input[0].device] = output[0]
+
+    def _register_hook(self):
+        for (name, module) in self.net_s.named_modules():
+            if name == self.layer_name_s:
+                self.handlers.append(module.register_forward_hook(self._get_features_s_hook))
+            if name == self.xyz_name_s:
+                self.handlers.append(module.register_forward_hook(self._get_xyz_features_s_hook))
+        for (name, module) in self.net_t1.named_modules():
+            if name == self.layer_name_t1:
+                self.handlers.append(module.register_forward_hook(self._get_features_t1_hook))
+            if name == self.xyz_name_t1:
+                self.handlers.append(module.register_forward_hook(self._get_xyz_features_t1_hook))
+            if self.adaptive_xyz_name and name == self.adaptive_xyz_name:
+                self.handlers.append(module.register_forward_hook(self._get_xyz_adaptive_features_t_hook))
+
+        for (name, module) in self.net_t2.named_modules():
+            if name == self.layer_name_t2:
+                self.handlers.append(module.register_forward_hook(self._get_features_t2_hook))
+            if name == self.xyz_name_t2:
+                self.handlers.append(module.register_forward_hook(self._get_xyz_features_t2_hook))
+
 
     def remove_handlers(self):
         for handle in self.handlers:
